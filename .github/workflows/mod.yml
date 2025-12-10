@@ -1,0 +1,99 @@
+name: CI - Build and Release
+
+on:
+  push:
+    # 配置触发条件：通常在推送到主分支或打标签时构建
+    branches: [ "main", "master" ]
+    tags: [ 'v*' ] # 推送类似 v1.0.0 的标签时触发发布流程
+  pull_request:
+    branches: [ "main", "master" ]
+  # 你也可以手动触发工作流（在 GitHub Actions 页面）
+  workflow_dispatch:
+
+# 设置环境变量，方便后续步骤引用
+env:
+  # 产物名称，可根据你的 modid 和项目名修改
+  JAR_NAME: "my-awesome-mod"
+  # 使用的 Java 版本，Minecraft 1.17+ 通常需要 Java 17
+  JAVA_VERSION: '17'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # 使用 GitHub 托管的 Ubuntu 运行器
+
+    steps:
+    # 1. 检出代码
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # 获取所有历史，有助于版本号生成
+
+    # 2. 设置 Java 环境
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin' # Eclipse Temurin 是一个流行的开源 JDK 发行版
+
+    # 3. （可选但强烈推荐）配置 Gradle 依赖缓存，极大加速构建
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    # 4. 授予 Gradle Wrapper 执行权限（Linux/macOS 环境需要）
+    - name: Make gradlew executable
+      run: chmod +x gradlew
+
+    # 5. 执行 Gradle 构建
+    - name: Build with Gradle
+      run: ./gradlew build --stacktrace --no-daemon
+      # --stacktrace: 出错时提供更详细的信息
+      # --no-daemon: 在CI环境中避免使用后台守护进程，使日志更干净
+
+    # 6. 收集构建产物（JAR文件）
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-outputs
+        path: |
+          **/build/libs/*.jar
+          !**/build/libs/*-sources.jar
+          !**/build/libs/*-dev.jar
+        # 通常我们只保留主输出JAR，排除源码JAR和开发版JAR
+        if-no-files-found: error
+
+  # 第二个任务：创建 GitHub Release 并上传产物（仅在打标签时触发）
+  publish:
+    needs: build # 依赖 build 任务，确保先构建成功
+    runs-on: ubuntu-latest
+    # 仅在推送 tags 时运行此任务
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write # 必须授予写入 Releases 的权限
+
+    steps:
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-outputs
+
+    - name: Display structure of downloaded files
+      run: ls -R
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        files: "*.jar" # 上传所有找到的 JAR 文件
